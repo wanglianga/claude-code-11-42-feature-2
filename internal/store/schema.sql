@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     payload               jsonb       NOT NULL,
     quality_summary       jsonb       NOT NULL,
     diff                  jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    pedigree_calc_id      uuid,
     supersedes_snapshot_id uuid,
     published_at          timestamptz NOT NULL DEFAULT now(),
     UNIQUE (scope_type, scope_key, version)
@@ -202,6 +203,129 @@ CREATE TABLE IF NOT EXISTS snapshots (
 
 CREATE INDEX IF NOT EXISTS snapshots_scope_idx ON snapshots (scope_type, scope_key, version);
 CREATE INDEX IF NOT EXISTS snapshots_published_idx ON snapshots (published_at);
+
+-- ===========================================================================
+-- Packaging pedigree (来源追溯 / 数量核对 / 计算版本)
+-- All tables are append-only. Operation corrections add a NEW version row;
+-- calculations pin the operation versions they used and are never overwritten.
+-- ===========================================================================
+
+-- Registered package instances. A label alone is not an identity: instances
+-- are co-located by issuer + scope + active interval.
+CREATE TABLE IF NOT EXISTS pedigree_instances (
+    id              BIGSERIAL PRIMARY KEY,
+    instance_id     TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    issuer          TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    revision        TEXT,
+    role            TEXT NOT NULL DEFAULT 'package',
+    active_from     TIMESTAMPTZ NOT NULL,
+    active_to       TIMESTAMPTZ,
+    source_event_id TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (instance_id)
+);
+CREATE INDEX IF NOT EXISTS pedigree_instances_label_scope_idx
+    ON pedigree_instances (scope, label);
+
+-- Evidence-backed relabel aliases (换标签别名).
+CREATE TABLE IF NOT EXISTS pedigree_aliases (
+    id              BIGSERIAL PRIMARY KEY,
+    alias_id        TEXT NOT NULL UNIQUE,
+    from_instance_id TEXT NOT NULL,
+    to_instance_id   TEXT NOT NULL,
+    effective_at    TIMESTAMPTZ NOT NULL,
+    basis_event_id  TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pedigree_aliases_from_idx ON pedigree_aliases (from_instance_id);
+
+-- Interval-dated containment / stow relations (装载区间).
+CREATE TABLE IF NOT EXISTS pedigree_stows (
+    id               BIGSERIAL PRIMARY KEY,
+    stow_id          TEXT NOT NULL UNIQUE,
+    child_instance_id TEXT NOT NULL,
+    parent_kind      TEXT NOT NULL,
+    parent_ref       TEXT NOT NULL,
+    valid_from       TIMESTAMPTZ NOT NULL,
+    valid_to         TIMESTAMPTZ,
+    handover_event_id TEXT,
+    source_event_id  TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pedigree_stows_child_idx ON pedigree_stows (child_instance_id);
+CREATE INDEX IF NOT EXISTS pedigree_stows_parent_idx ON pedigree_stows (parent_ref);
+
+-- Packaging operations, versioned. A correction inserts a new (operation_key,
+-- version) row with supersedes pointing at the prior version's event.
+CREATE TABLE IF NOT EXISTS pedigree_operations (
+    id                BIGSERIAL PRIMARY KEY,
+    operation_key     TEXT NOT NULL,
+    version           INTEGER NOT NULL,
+    supersedes_key    TEXT,
+    kind              TEXT NOT NULL, -- relabel|intact_stow|split|mixed_repack
+    station           TEXT NOT NULL,
+    occurred_at       TIMESTAMPTZ NOT NULL,
+    received_at       TIMESTAMPTZ NOT NULL,
+    source_event_id   TEXT NOT NULL,
+    idempotency_key   TEXT NOT NULL,
+    unit              TEXT,
+    container_id      TEXT,
+    handover_event_id TEXT,
+    inputs            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    outputs           JSONB NOT NULL DEFAULT '[]'::jsonb,
+    allocations       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    losses            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    raw_payload       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    note              TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (operation_key, version)
+);
+CREATE INDEX IF NOT EXISTS pedigree_operations_kind_time_idx
+    ON pedigree_operations (kind, occurred_at);
+CREATE INDEX IF NOT EXISTS pedigree_operations_idem_idx
+    ON pedigree_operations (idempotency_key);
+
+-- On-demand source-range calculations with their pinned basis. Downstream
+-- snapshots reference calc_id; a revision supersedes rather than mutates.
+CREATE TABLE IF NOT EXISTS pedigree_calcs (
+    id                  BIGSERIAL PRIMARY KEY,
+    calc_id             UUID NOT NULL UNIQUE,
+    status              TEXT NOT NULL, -- completed|unverified|superseded
+    source_instance_id  TEXT NOT NULL,
+    target_instance_id  TEXT NOT NULL,
+    unit                TEXT,
+    lower_qty           BIGINT NOT NULL DEFAULT 0,
+    upper_qty           BIGINT NOT NULL DEFAULT 0,
+    range_status        TEXT NOT NULL,
+    basis               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    basis_hash          TEXT NOT NULL,
+    missing_basis       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    conflicting_ops     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    witness             JSONB NOT NULL DEFAULT '[]'::jsonb,
+    resource_limit      BOOLEAN NOT NULL DEFAULT FALSE,
+    superseded_at       TIMESTAMPTZ,
+    superseded_by_calc  UUID,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pedigree_calcs_pair_idx
+    ON pedigree_calcs (source_instance_id, target_instance_id);
+CREATE INDEX IF NOT EXISTS pedigree_calcs_status_idx ON pedigree_calcs (status);
+
+-- Append-only record that a calculation version was superseded. The original
+-- calc row is never mutated; current status is derived by left-joining this.
+CREATE TABLE IF NOT EXISTS pedigree_calc_supersessions (
+    id                  BIGSERIAL PRIMARY KEY,
+    calc_id             UUID NOT NULL,
+    superseded_by_calc  UUID NOT NULL,
+    reason              TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (calc_id)
+);
+CREATE INDEX IF NOT EXISTS pedigree_calc_super_by_idx
+    ON pedigree_calc_supersessions (superseded_by_calc);
 
 -- Append-only enforcement -----------------------------------------------------
 CREATE OR REPLACE FUNCTION forbid_mutation() RETURNS trigger
@@ -217,7 +341,9 @@ BEGIN
     FOREACH t IN ARRAY ARRAY[
         'contracts','raw_events','intake_attempts','graph_links','graph_retractions',
         'evidence_dispositions','watermarks','watermark_closures','rule_violations',
-        'status_assessments','snapshots'
+        'status_assessments','snapshots',
+        'pedigree_instances','pedigree_aliases','pedigree_stows',
+        'pedigree_operations','pedigree_calcs','pedigree_calc_supersessions'
     ] LOOP
         IF NOT EXISTS (
             SELECT 1 FROM pg_trigger

@@ -56,10 +56,11 @@ type Check struct {
 
 // Runner drives the scenario.
 type Runner struct {
-	svc *service.Service
-	now time.Time
-	rep *Report
-	ids map[string]string // logical name -> event id
+	svc      *service.Service
+	pedigree *service.PedigreeService
+	now      time.Time
+	rep      *Report
+	ids      map[string]string // logical name -> event id
 	// ResetBeforeRun wipes the schema so the run is deterministic. Disable it
 	// to layer demo data onto an existing ledger.
 	ResetBeforeRun bool
@@ -88,8 +89,10 @@ const (
 // default so the run is deterministic and self-contained.
 func NewRunner(svc *service.Service) *Runner {
 	base := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
+	pedStore := store.NewPedigreeStore(svc.Store().Pool())
 	return &Runner{
-		svc: svc, now: base, rep: &Report{StartedAt: base},
+		svc: svc, pedigree: service.NewPedigreeService(pedStore),
+		now: base, rep: &Report{StartedAt: base},
 		ids: map[string]string{}, ResetBeforeRun: true,
 	}
 }
@@ -139,6 +142,9 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		return nil, err
 	}
 	if err := r.manifestGapScenario(ctx); err != nil {
+		return nil, err
+	}
+	if err := r.pedigreeScenario(ctx); err != nil {
 		return nil, err
 	}
 	r.verifyAtEnd(ctx)

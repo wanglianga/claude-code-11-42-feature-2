@@ -25,15 +25,23 @@ var openapiSpec []byte
 
 // Server wires routes to the service.
 type Server struct {
-	svc     *service.Service
-	pool    *pgxpool.Pool
-	mux     *http.ServeMux
-	openapi []byte
+	svc      *service.Service
+	pedigree *service.PedigreeService
+	pool     *pgxpool.Pool
+	mux      *http.ServeMux
+	openapi  []byte
 }
 
 // New builds the API server.
 func New(svc *service.Service) *Server {
-	s := &Server{svc: svc, pool: svc.Store().Pool(), mux: http.NewServeMux(), openapi: openapiSpec}
+	pedStore := store.NewPedigreeStore(svc.Store().Pool())
+	s := &Server{
+		svc:      svc,
+		pedigree: service.NewPedigreeService(pedStore),
+		pool:     svc.Store().Pool(),
+		mux:      http.NewServeMux(),
+		openapi:  openapiSpec,
+	}
 	s.routes()
 	return s
 }
@@ -89,6 +97,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/publications/{scopeType}/{key}/as-of", s.handleSnapshotAsOf)
 
 	m.HandleFunc("GET /v1/operations/overview", s.handleOverview)
+
+	// Packaging-pedigree endpoints (来源追溯 / 数量核对 / 修订影响).
+	NewPedigreeHandlers(s.pedigree).RegisterRoutes(m)
 }
 
 // ---- helpers ---------------------------------------------------------------

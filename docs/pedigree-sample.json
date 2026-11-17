@@ -1,0 +1,85 @@
+{
+  "_comment": "可本地导入的包装谱系样本：混装再拆分（先无逐件分配、后补凭证）、嵌套装载、异地同号、换装、皮重、矛盾凭证、拆分扫描。通过 POST /v1/pedigree/* 依次导入。",
+  "instances": [
+    {"instance_id": "PED-SRC-A", "label": "LBL-A", "issuer": "carrier-issuer", "scope": "PEK", "role": "package", "active_from": "2026-11-17T06:00:00Z", "source_event_id": "ev-PED-SRC-A"},
+    {"instance_id": "PED-SRC-B", "label": "LBL-B", "issuer": "carrier-issuer", "scope": "PEK", "role": "package", "active_from": "2026-11-17T06:00:00Z", "source_event_id": "ev-PED-SRC-B"},
+    {"instance_id": "PED-PKG-X", "label": "LBL-X", "issuer": "carrier-issuer", "scope": "PEK", "role": "package", "active_from": "2026-11-17T08:00:00Z", "source_event_id": "ev-PED-PKG-X"},
+    {"instance_id": "PED-PKG-Y", "label": "LBL-Y", "issuer": "carrier-issuer", "scope": "PEK", "role": "package", "active_from": "2026-11-17T08:00:00Z", "source_event_id": "ev-PED-PKG-Y"},
+    {"instance_id": "PED-DUP-PEK", "label": "DUPNUM-1", "issuer": "carrier-issuer", "scope": "PEK", "role": "package", "active_from": "2026-11-17T08:00:00Z", "source_event_id": "ev-d1"},
+    {"instance_id": "PED-DUP-SHA", "label": "DUPNUM-1", "issuer": "carrier-issuer", "scope": "SHA", "role": "package", "active_from": "2026-11-17T08:00:00Z", "source_event_id": "ev-d2"}
+  ],
+  "operations": [
+    {
+      "operation_key": "PED-OP-MIX",
+      "version": 1,
+      "kind": "mixed_repack",
+      "station": "PEK",
+      "occurred_at": "2026-11-17T08:00:00Z",
+      "received_at": "2026-11-17T08:00:00Z",
+      "source_event_id": "ev-mix-1",
+      "idempotency_key": "ped-mix-1",
+      "unit": "PCS",
+      "inputs": [
+        {"instance_id": "PED-SRC-A", "label": "LBL-A", "quantity": 10, "unit": "PCS"},
+        {"instance_id": "PED-SRC-B", "label": "LBL-B", "quantity": 6, "unit": "PCS"}
+      ],
+      "outputs": [
+        {"instance_id": "PED-PKG-X", "label": "LBL-X", "quantity": 8, "unit": "PCS"},
+        {"instance_id": "PED-PKG-Y", "label": "LBL-Y", "quantity": 8, "unit": "PCS"}
+      ],
+      "allocations": []
+    },
+    {
+      "operation_key": "PED-OP-MIX",
+      "version": 2,
+      "supersedes_key": "PED-OP-MIX",
+      "kind": "mixed_repack",
+      "station": "PEK",
+      "occurred_at": "2026-11-17T08:00:00Z",
+      "received_at": "2026-11-17T08:10:00Z",
+      "source_event_id": "ev-mix-2",
+      "idempotency_key": "ped-mix-2",
+      "unit": "PCS",
+      "inputs": [
+        {"instance_id": "PED-SRC-A", "quantity": 10, "unit": "PCS"},
+        {"instance_id": "PED-SRC-B", "quantity": 6, "unit": "PCS"}
+      ],
+      "outputs": [
+        {"instance_id": "PED-PKG-X", "quantity": 8, "unit": "PCS"},
+        {"instance_id": "PED-PKG-Y", "quantity": 8, "unit": "PCS"}
+      ],
+      "allocations": [
+        {"from_instance_id": "PED-SRC-A", "to_instance_id": "PED-PKG-X", "quantity": 5, "unit": "PCS", "evidence_event_id": "ev-alloc"},
+        {"from_instance_id": "PED-SRC-A", "to_instance_id": "PED-PKG-Y", "quantity": 5, "unit": "PCS", "evidence_event_id": "ev-alloc"},
+        {"from_instance_id": "PED-SRC-B", "to_instance_id": "PED-PKG-X", "quantity": 3, "unit": "PCS", "evidence_event_id": "ev-alloc"},
+        {"from_instance_id": "PED-SRC-B", "to_instance_id": "PED-PKG-Y", "quantity": 3, "unit": "PCS", "evidence_event_id": "ev-alloc"}
+      ]
+    },
+    {
+      "operation_key": "PED-OP-BAD",
+      "version": 1,
+      "kind": "mixed_repack",
+      "station": "PEK",
+      "occurred_at": "2026-11-17T08:20:00Z",
+      "received_at": "2026-11-17T08:20:00Z",
+      "source_event_id": "ev-bad",
+      "idempotency_key": "ped-bad",
+      "unit": "PCS",
+      "inputs": [{"instance_id": "PED-BAD-S", "label": "BAD-S", "quantity": 16, "unit": "PCS"}],
+      "outputs": [{"instance_id": "PED-BAD-C", "label": "BAD-C", "quantity": 17, "unit": "PCS"}],
+      "allocations": []
+    }
+  ],
+  "range_queries": [
+    {"source_instance_id": "PED-SRC-A", "target_instance_id": "PED-PKG-X", "expected_after_v1": "partial [2,8]", "expected_after_v2": "exact [5,5]"},
+    {"source_instance_id": "PED-SRC-B", "target_instance_id": "PED-PKG-X", "expected": "uncertain [0,6]"},
+    {"source_instance_id": "PED-BAD-S", "target_instance_id": "PED-BAD-C", "expected": "infeasible (conflicting operation PED-OP-BAD)"}
+  ],
+  "import_order": [
+    "POST /v1/pedigree/instances",
+    "POST /v1/pedigree/operations (version 1, then version 2)",
+    "POST /v1/pedigree/range-tasks",
+    "POST /v1/pedigree/revisions/impact",
+    "GET  /v1/pedigree/calcs/{id}/replay"
+  ]
+}

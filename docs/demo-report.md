@@ -1,8 +1,5 @@
 # 演示报告
 
-> 由 `make demo` 在本地 PostgreSQL 18 上实际执行生成；27/27 断言通过。
-
-
 ## 0. 报文契约注册
 
 | 步骤 | 结果 | 说明 |
@@ -27,16 +24,16 @@
 | as-of publication 02:35 read | ✅ | v1 provisional status=verified |
 | publish container AKE12345MU | ✅ | status=verified derived_from=1 shipment(s) |
 | publish leg CA1234/2026-11-17/PEK-SHA | ✅ | status=verified derived_from=1 shipment(s) |
-| replay a484afa6 | ✅ | published=verified recomputed=verified match=true |
-| replay 09641d59 | ✅ | published=verified recomputed=verified match=true |
+| replay bfab39db | ✅ | published=verified recomputed=verified match=true |
+| replay 48e721dc | ✅ | published=verified recomputed=verified match=true |
 
 ## 2. 重复补传 + 拆包旧证据 AWB12345678902
 
 | 步骤 | 结果 | 说明 |
 | --- | --- | --- |
-| identical retransmission | ✅ | outcome=duplicate_identical duplicate_of=6d5b3ba4-c03d-4b81-bdd2-c769c6beae5b |
-| conflicting retransmission | ✅ | outcome=duplicate_conflicting error=true (original 6d5b3ba4-c03d-4b81-bdd2-c769c6beae5b kept) |
-| review correction | ✅ | review supersedes device verdict 6d5b3ba4 |
+| identical retransmission | ✅ | outcome=duplicate_identical duplicate_of=4471eaba-d666-460a-aa7c-0ec777a6ea56 |
+| conflicting retransmission | ✅ | outcome=duplicate_conflicting error=true (original 4471eaba-d666-460a-aa7c-0ec777a6ea56 kept) |
+| review correction | ✅ | review supersedes device verdict 4471eaba |
 | split at 04:25 | ✅ | PKG-DUP-1 -> PKG-SPLIT-1A + PKG-SPLIT-1B (new composition version, not a mutation) |
 | late scan citing retired package | ✅ | arrived 6 minutes after the split; cites PKG-DUP-1 which no longer exists as a version |
 | children re-screened | ✅ | both split children carry their own screening verdict + evidence archive |
@@ -61,6 +58,23 @@
 | 步骤 | 结果 | 说明 |
 | --- | --- | --- |
 | publish manifest-gap shipment | ✅ | status=pending_evidence consumable=false pending=[departure_handover_missing manifest_required_evidence_missing] |
+
+## 5. 包装谱系：来源范围、守恒核对、归属与修订影响
+
+| 步骤 | 结果 | 说明 |
+| --- | --- | --- |
+| 混装再拆分（无逐件分配，仅投入/产出总数） | ✅ | A=10, B=6 -> X=8, Y=8 |
+| 来源可达数量上下界（守恒约束求解） | ✅ | A->X [2,8], 缺失依据=[PED-OP-MIX] |
+| 后续分配凭证收紧可行范围 | ✅ | A->X 收敛为 exact 5 |
+| 嵌套装载查询（外箱与内件不重复计数） | ✅ | leaf packages=[PED-IN1 PED-IN2] |
+| 异地同号包装保持不同实例 | ✅ | DUPNUM-1 @PEK and @SHA resolved separately |
+| 互斥位置与合法先后换装 | ✅ | overlapping open stows flagged; handover-closed transload accepted |
+| 皮重/毛重/容差核对 | ✅ | gross changed after rebox but net weight stays within tolerance |
+| 相互矛盾的数量凭证 | ✅ | infeasible, conflicting ops=[PED-OP-BAD] |
+| 迟到扫描归属（不按子件数量复制） | ✅ | parent scan=unattributable, scoped child scan=attributed |
+| 早期操作更正的依赖影响分析 | ✅ | affected ops=[PED-OP-MIX], invalidated calcs=3, recomputable snapshots=[] |
+| 旧版本计算的可重放性 | ✅ | v1 calc replayed to [2,8] despite v2 revision |
+| pedigree scenario import | ✅ | ok |
 
 ## 5. 收尾校验：账本不可变 + 所有版本可复演 + 顶层约束
 
@@ -99,7 +113,21 @@
 | manifest citing missing required evidence cannot yield a confirmed status | ✅ | the snapshot must publish only quality warnings and pending-evidence items |
 | manifest evidence gap is surfaced as a pending/blocking item | ✅ | a missing required evidence index must be visible to the operator |
 | manifest-gap snapshot replays deterministically | ✅ | the refusal to confirm must be reproducible from history |
+| 无分配时来源范围是区间而非确定份额 | ✅ | A->X = partial [2,8] |
+| 开放区间给出缺失依据 | ✅ | missing_basis=[PED-OP-MIX] |
+| 上界不可相加成来源总量 | ✅ | each boundary carries a full-chain witness |
+| 补齐凭证后范围收敛为确定值 | ✅ | A->X after voucher = exact [5,5] |
+| 嵌套容器只按叶节点汇总一次 | ✅ | leaves=[PED-IN1 PED-IN2] package_count=3 |
+| 异地同号不并为一个实例 | ✅ | reused-label info finding present |
+| 重叠位置判互斥、有交接的换装合法 | ✅ | mutex-position findings=5 |
+| 换箱毛重不同但净重落在容差内 | ✅ | tare-aware weight conclusion within_tolerance |
+| 矛盾凭证使全链不可行并指出冲突操作 | ✅ | status=infeasible conflicts=[PED-OP-BAD] |
+| 包装件数不与内件数量直接相抵 | ✅ | package-item netting finding present |
+| 拆分后迟到扫描不复制为多条子件确认 | ✅ | status=unattributable reason=scan cites a package retired before scan time with no current alias; it must not be copied to split children |
+| 显式内容范围的扫描精确归属 | ✅ | status=attributed instance=PED-K1 |
+| 修订只使依赖路径上的计算失效 | ✅ | affected=[PED-OP-MIX] invalidated=3 |
+| 旧计算按固定操作版本可重算（新修订不替换当前归属） | ✅ | pinned=[2,8] replay=[2,8] |
 | ledger rejects overwrite | ✅ | UPDATE on raw_events is blocked by the DB |
 | all published versions replay deterministically | ✅ | each downstream state must be reproducible by historical version |
 
-**27/27 checks passed**
+**41/41 checks passed**
